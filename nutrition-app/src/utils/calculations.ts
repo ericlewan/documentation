@@ -1,15 +1,33 @@
-import { DailySetupInput, DailyTargets } from '@/types'
+import { DailySetupInput, DailyTargets, DayType } from '@/types'
 
 /**
- * Weight range definitions for deficit calculation
+ * Weight range definitions for sliding deficit calculation
+ * As you lose weight, the deficit decreases to preserve muscle mass
  */
 const WEIGHT_RANGES = [
-  { min: 90, max: 100, deficit: 750 },
-  { min: 80, max: 90, deficit: 650 },
-  { min: 70, max: 80, deficit: 550 },
-  { min: 60, max: 70, deficit: 450 },
-  { min: 0, max: 60, deficit: 350 },
+  { min: 90, max: Infinity, deficit: 750 }, // 90-100+ kg
+  { min: 80, max: 90, deficit: 650 },       // 80-90 kg
+  { min: 70, max: 80, deficit: 550 },       // 70-80 kg
+  { min: 0, max: 70, deficit: 450 },        // Below 70 kg
 ]
+
+/**
+ * Activity constants
+ */
+const ACTIVITY_BASE = 600  // Base activity calories
+const NEAT = 300          // Non-exercise activity thermogenesis
+
+/**
+ * Banking modifiers for weekly calorie cycling
+ */
+const BANKING_WEEKDAY = -100  // Mon-Thu
+const BANKING_WEEKEND = 133   // Fri-Sun
+
+/**
+ * Fixed user parameters (can be made dynamic later)
+ */
+const USER_HEIGHT_CM = 172
+const USER_AGE_YEARS = 27
 
 /**
  * Calculate BMR using the Mifflin-St Jeor Equation
@@ -29,14 +47,15 @@ export function calculateBMR(
 }
 
 /**
- * Get deficit based on current weight
+ * Get deficit based on current weight using sliding scale
+ * Sliding deficit ensures we preserve muscle mass as weight decreases
  *
  * @param weight - Current weight in kg
  * @returns Deficit in calories
  */
 export function getDeficitForWeight(weight: number): number {
   const range = WEIGHT_RANGES.find(r => weight >= r.min && weight < r.max)
-  return range?.deficit || 350 // Default to smallest deficit if not found
+  return range?.deficit || 450 // Default to smallest deficit if not found
 }
 
 /**
@@ -63,74 +82,95 @@ export function calculateWeekendModifier(isWeekend: boolean): number {
 }
 
 /**
- * Calculate training day bonus
+ * Calculate training day bonus based on activity type
  *
- * @param isTrainingDay - Whether it's a training day
- * @returns Bonus in calories
+ * @param dayType - Type of training day
+ * @returns Bonus calories to add to daily target
  */
-export function calculateTrainingBonus(isTrainingDay: boolean): number {
-  return isTrainingDay ? 250 : 0
+export function calculateDayTypeBonus(dayType: DayType): number {
+  switch (dayType) {
+    case 'training':
+      return 250  // Full training day
+    case 'active_recovery':
+      return 100  // Light activity day
+    case 'rest':
+      return 0    // Complete rest day
+    default:
+      return 0
+  }
 }
 
 /**
  * Calculate daily calorie target with all modifiers
  *
+ * This is the brain of the system - calculates personalized daily nutrition targets
+ * based on current weight, activity level, and training status.
+ *
  * @param input - Daily setup input data
- * @param height - User's height in cm
- * @param age - User's age in years
- * @returns Complete daily targets including calories and macros
+ * @param height - User's height in cm (default: 172)
+ * @param age - User's age in years (default: 27)
+ * @returns Complete daily targets including calories and macros with breakdown
  */
 export function calculateDailyTargets(
   input: DailySetupInput,
-  height: number = 172,
-  age: number = 27
+  height: number = USER_HEIGHT_CM,
+  age: number = USER_AGE_YEARS
 ): {
   bmr: number
   activityBase: number
+  deficit: number
   appleWatchModifier: number
   weekendModifier: number
-  trainingBonus: number
+  dayTypeBonus: number
+  baseTarget: number
   targets: DailyTargets
 } {
-  // Base calculations
+  // Step 1: Calculate BMR (Basal Metabolic Rate)
   const bmr = calculateBMR(input.weight, height, age)
-  const activityBase = 600 + 300 // Activity base (600) + NEAT (300)
+
+  // Step 2: Activity base (600 + 300 NEAT)
+  const activityBase = ACTIVITY_BASE + NEAT
+
+  // Step 3: Sliding deficit based on current weight
   const deficit = getDeficitForWeight(input.weight)
 
-  // Modifiers
+  // Step 4: Calculate base target before modifiers
+  const baseTarget = bmr + activityBase - deficit
+
+  // Step 5: Calculate all modifiers
   const appleWatchModifier = calculateAppleWatchModifier(input.activityCalories)
   const weekendModifier = calculateWeekendModifier(input.isWeekend)
-  const trainingBonus = calculateTrainingBonus(input.isTrainingDay)
+  const dayTypeBonus = calculateDayTypeBonus(input.dayType)
 
-  // Total daily calories
+  // Step 6: Calculate final daily calorie target
   const targetCalories = Math.round(
-    bmr +
-    activityBase -
-    deficit +
+    baseTarget +
     appleWatchModifier +
     weekendModifier +
-    trainingBonus
+    dayTypeBonus
   )
 
-  // Macro targets (approximate split)
-  // Protein: 2g per kg body weight
-  const targetProtein = Math.round(input.weight * 2)
+  // Step 7: Calculate macro targets
+  // Protein: 1.5g per kg body weight (optimal for muscle preservation)
+  const targetProtein = Math.round(input.weight * 1.5)
 
-  // Fat: 25% of calories
-  const fatCalories = Math.round(targetCalories * 0.25)
+  // Fat: 27.5% of total calories (middle of 25-30% range)
+  const fatCalories = Math.round(targetCalories * 0.275)
   const targetFat = Math.round(fatCalories / 9)
 
-  // Carbs: remaining calories
+  // Carbs: remaining calories (4 cal per gram)
   const proteinCalories = targetProtein * 4
   const remainingCalories = targetCalories - proteinCalories - fatCalories
-  const targetCarbs = Math.round(remainingCalories / 4)
+  const targetCarbs = Math.max(0, Math.round(remainingCalories / 4))
 
   return {
     bmr,
     activityBase,
+    deficit,
     appleWatchModifier,
     weekendModifier,
-    trainingBonus,
+    dayTypeBonus,
+    baseTarget,
     targets: {
       calories: targetCalories,
       protein: targetProtein,
@@ -195,4 +235,49 @@ export function getEncouragingMessage(
   } else {
     return `You've exceeded your ${macroName} target. That's okay - tomorrow is a new day!`
   }
+}
+
+/**
+ * Format calculation breakdown for display
+ * Useful for showing users how their daily targets were calculated
+ *
+ * @param calculation - Result from calculateDailyTargets
+ * @param input - Original input data
+ * @returns Formatted string showing the calculation breakdown
+ */
+export function formatCalculationBreakdown(
+  calculation: ReturnType<typeof calculateDailyTargets>,
+  input: DailySetupInput
+): string {
+  const lines = [
+    '=== DAILY TARGET CALCULATION ===',
+    '',
+    '📊 Input:',
+    `  Weight: ${input.weight} kg`,
+    `  Apple Watch Move: ${input.activityCalories} cal`,
+    `  Day Type: ${input.dayType}`,
+    `  Weekend: ${input.isWeekend ? 'Yes (Fri-Sun)' : 'No (Mon-Thu)'}`,
+    '',
+    '🔥 Base Calculations:',
+    `  BMR (Basal Metabolic Rate): ${calculation.bmr} cal`,
+    `  Activity Base (600 + 300 NEAT): ${calculation.activityBase} cal`,
+    `  Sliding Deficit: -${calculation.deficit} cal`,
+    `  ────────────────────────────────`,
+    `  Base Target: ${calculation.baseTarget} cal`,
+    '',
+    '⚡ Modifiers:',
+    `  Apple Watch: ${calculation.appleWatchModifier >= 0 ? '+' : ''}${calculation.appleWatchModifier} cal`,
+    `  Banking: ${calculation.weekendModifier >= 0 ? '+' : ''}${calculation.weekendModifier} cal`,
+    `  Day Type Bonus: ${calculation.dayTypeBonus >= 0 ? '+' : ''}${calculation.dayTypeBonus} cal`,
+    '',
+    '🎯 Final Targets:',
+    `  Calories: ${calculation.targets.calories} cal`,
+    `  Protein: ${calculation.targets.protein}g (${input.weight} kg × 1.5g)`,
+    `  Fat: ${calculation.targets.fat}g (27.5% of calories)`,
+    `  Carbs: ${calculation.targets.carbs}g (remaining calories)`,
+    '',
+    '================================',
+  ]
+
+  return lines.join('\n')
 }

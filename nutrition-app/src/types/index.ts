@@ -1,5 +1,10 @@
 // Core nutrition types
 
+/**
+ * Day type for training schedule
+ */
+export type DayType = 'training' | 'active_recovery' | 'rest'
+
 export interface UserProfile {
   id: string
   email: string
@@ -10,9 +15,9 @@ export interface UserProfile {
 
 export interface DailySetupInput {
   weight: number // kg
-  activityCalories: number // from Apple Watch
-  isTrainingDay: boolean
-  isWeekend: boolean
+  activityCalories: number // from Apple Watch Move calories
+  dayType: DayType // training, active_recovery, or rest
+  isWeekend: boolean // For banking calculation
 }
 
 export interface DailyTargets {
@@ -28,13 +33,15 @@ export interface DailyLog {
   date: string
   weight: number
   activityCalories: number
-  isTrainingDay: boolean
+  dayType: DayType
   isWeekend: boolean
   bmr: number
   activityBase: number
+  deficit: number
   appleWatchModifier: number
   weekendModifier: number
-  trainingBonus: number
+  dayTypeBonus: number
+  baseTarget: number
   targetCalories: number
   targetProtein: number
   targetCarbs: number
